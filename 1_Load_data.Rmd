@@ -1,0 +1,246 @@
+---
+title: "1_Load_data"
+author: "Sarah HUET"
+date: "2021 M03 10"
+output: html_document
+---
+
+This script take biom file (QIIME pipeline output) and mapping file to gather data in phyloseq objects:
+     - ps_16S_raw & ps_18S_raw: phyloseq objects with raw data, for 16S rDNA and 18S rDNA sequences respectively
+     - ps_16S & ps_18S: phyloseq objects with cleaned data, for 16S rDNA and 18S rDNA sequences respectively
+     - ps_16S_most_abund & ps_18S_most_abund: phyloseq object with filtered OTUs, for 16S rDNA and 18S rDNA sequences respectively
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(phyloseq)
+library(readr)
+library(dplyr)
+library(phytools)
+
+```
+
+# Load raw biom file and clean data
+
+```{r 16S: load raw biom file}
+
+# import biom file
+tmp_ps = import_biom("Data/biom_16S.biom")
+# remove extra taxa rank
+tmp_ps@tax_table <- tmp_ps@tax_table[,1:7]
+# set taxa rank names
+colnames(tmp_ps@tax_table) <- c("Kingdom","Phylum","Class","Order","Family","Genus","Species")
+# import mapping file
+tmp_mapping_file <- read_csv("Data/mapping_file.csv")
+tmp_design = sample_data(tmp_mapping_file)
+sample_names(tmp_design) <- tmp_design$sample
+# import tree
+tmp_tree = read.newick("Data/phylogeny_16S.tre")
+#merge onto one phyloseq object
+ps_16S_raw = merge_phyloseq(tmp_ps,tmp_design,tmp_tree)
+
+# final ps_16S_raw: 440 samples & 5504 OTUs
+
+rm(list = names(.GlobalEnv)[grep("tmp_",names(.GlobalEnv))])
+
+```
+
+```{r 16S: clean dataset}
+
+ps_16S = ps_16S_raw
+# remove aberrant samples
+ps_16S <- prune_samples(!(sample_names(ps_16S) %in% c("216","242")),ps_16S)
+ps_16S <- prune_taxa(taxa_sums(ps_16S) > 0, ps_16S)
+# remove samples with seq count < 9000
+ps_16S <- prune_samples(sample_sums(ps_16S) > 9000, ps_16S )
+ps_16S <- prune_taxa(taxa_sums(ps_16S) > 0, ps_16S)
+
+```
+
+```{r 18S: load raw biom file}
+
+# import biom file
+tmp_ps = import_biom("Data/biom_18S.biom")
+# set taxa rank names
+colnames(tmp_ps@tax_table) <- c("Kingdom","Domain","Phylum","Class","Order","Family","Genus","Species")
+# import mapping file
+tmp_mapping_file <- read_csv("Data/mapping_file.csv")
+tmp_design = sample_data(tmp_mapping_file)
+sample_names(tmp_design) <- tmp_design$sample
+# import tree
+tmp_tree = read.newick("Data/phylogeny_18S_mafft.tre")
+#merge onto one phyloseq object
+ps_18S_raw = merge_phyloseq(tmp_ps,tmp_design,tmp_tree)
+
+# final ps_18S_raw: 440 samples & 3336 OTUs
+
+rm(list = names(.GlobalEnv)[grep("tmp_",names(.GlobalEnv))])
+```
+
+```{r 18S: clean dataset}
+
+ps_18S = ps_18S_raw
+# remove aberrant samples
+ps_18S <- prune_samples(!(sample_names(ps_18S) %in% c("120","124")),ps_18S)
+ps_18S <- prune_taxa(taxa_sums(ps_18S) > 0, ps_18S)
+# remove  c__Embryophyceae that are plants and OTU with unknown kingdom
+ps_18S<- subset_taxa(ps_18S,!(ps_18S@tax_table[,"Class"] == "c__Embryophyceae"))
+# remove samples with seq count < 8000
+ps_18S <- prune_samples(sample_sums(ps_18S) > 8000, ps_18S )
+ps_18S <- prune_taxa(taxa_sums(ps_18S) > 0, ps_18S)
+
+```
+
+## Filter most abundant OTUs
+
+```{r 16S: freq filter}
+
+tmp_ps = ps_16S
+# calculate OTU frequency
+tmp_df_otu <- as.data.frame(otu_table(tmp_ps))
+tmp_df_otu_freq <- apply(tmp_df_otu, 2, FUN=function(x) x/sum(x)*100)
+# apply a minimum frequency threshold to 0.5
+tmp <- apply(tmp_df_otu_freq, 1, FUN=function(x) sum(x>(0.5)))
+# select OTUs above frequency threshold
+tmp_otus_F1 <- rownames(tmp_df_otu[-which(tmp==0),])
+# subset selected OTUs
+tmp_ps_filter1 <- prune_taxa(taxa_names(tmp_ps) %in% tmp_otus_F1, tmp_ps)
+
+```
+
+```{r 16S: prevalence filter}
+# /!\ takes from 30min to 3h /!\
+
+tmp_ps = tmp_ps_filter1 
+# calculate OTUs prevalence in treatment (ttt)
+tmp_df <- psmelt(tmp_ps)
+tmp_otu_prev_ttt <- data.frame(matrix(ncol=length(unique(tmp_df$treatment)),
+                                     nrow=length(unique(tmp_df$OTU)), 
+                                     dimnames=list(unique(tmp_df$OTU),
+                                                   unique(tmp_df$treatment))))
+for (i in unique(tmp_df$OTU)) {
+  for (j in unique(tmp_df$treatment)) {
+    tmp_otu_prev_ttt[i,j] <- sum(tmp_df$Abundance[tmp_df$OTU == i & tmp_df$treatment == j] > 0,
+                                 na.rm = T) / length(tmp_df$Sample[tmp_df$OTU == i & tmp_df$treatment == j]) *100
+  }
+  
+} 
+rm(i,j)
+# calculate maximum OTUs prevalence in treatment
+tmp <- apply(tmp_otu_prev_ttt,1, FUN=function(x) max(x))
+# select OTUs above a minimum prevalence in treatment threshold set to 60% 
+tmp_otus_F2 <- rownames(tmp_otu_prev_ttt[which(tmp >= 60),])
+# subset selected OTUs
+tmp_ps <- prune_taxa(taxa_names(tmp_ps) %in% tmp_otus_F2, tmp_ps)
+ps_16S_most_abund = tmp_ps
+
+rm(list = names(.GlobalEnv)[grep("tmp",names(.GlobalEnv))])
+```
+
+```{r 18S: freq filter}
+
+tmp_ps = ps_18S
+# calculate OTU frequency
+tmp_df_otu <- as.data.frame(otu_table(tmp_ps))
+tmp_df_otu_freq <- apply(tmp_df_otu, 2, FUN=function(x) x/sum(x)*100)
+# apply a minimum frequency threshold to 0.5
+tmp <- apply(tmp_df_otu_freq, 1, FUN=function(x) sum(x>(0.5)))
+# select OTUs above frequency threshold
+tmp_otus_F1 <- rownames(tmp_df_otu[-which(tmp==0),])
+# subset selected OTUs
+tmp_ps_filter1 <- prune_taxa(taxa_names(tmp_ps) %in% tmp_otus_F1, tmp_ps)
+
+```
+
+```{r 18S: prevalence filter}
+# /!\ takes from 30min to 3h /!\
+
+tmp_ps = tmp_ps_filter1 
+# calculate OTUs prevalence in treatment (ttt)
+tmp_df <- psmelt(tmp_ps)
+tmp_otu_prev_ttt <- data.frame(matrix(ncol=length(unique(tmp_df$treatment)),
+                                     nrow=length(unique(tmp_df$OTU)), 
+                                     dimnames=list(unique(tmp_df$OTU),
+                                                   unique(tmp_df$treatment))))
+for (i in unique(tmp_df$OTU)) {
+  for (j in unique(tmp_df$treatment)) {
+    tmp_otu_prev_ttt[i,j] <- sum(tmp_df$Abundance[tmp_df$OTU == i & tmp_df$treatment == j] > 0,
+                                 na.rm = T) / length(tmp_df$Sample[tmp_df$OTU == i & tmp_df$treatment == j]) *100
+  }
+  
+} 
+rm(i,j)
+# calculate maximum OTUs prevalence in treatment
+tmp <- apply(tmp_otu_prev_ttt,1, FUN=function(x) max(x))
+# select OTUs above a minimum prevalence in treatment threshold set to 60% 
+tmp_otus_F2 <- rownames(tmp_otu_prev_ttt[which(tmp >= 60),])
+# subset selected OTUs
+tmp_ps <- prune_taxa(taxa_names(tmp_ps) %in% tmp_otus_F2, tmp_ps)
+ps_18S_most_abund = tmp_ps
+
+rm(list = names(.GlobalEnv)[grep("tmp",names(.GlobalEnv))])
+```
+
+## Remove unused treatments
+
+There is three treatments in this experiment that are not part of the original experimental design and that will be removed for subsequent analysis.
+These three treatments are Step 2 cross-treatments i.e. coalescence treatments between depleted communitites without the control community:
+* Cip+Ram: coalescence between Cip and Ram Step 1 treatments
+* Cip+HS: coalescence between Cip and HS Step 1 treatments
+* Ram+HS: coalescence between Ram and HS Step 1 treatments
+
+```{r 16S}
+
+ps_16S <- prune_samples(!(sample_names(ps_16S) %in% c(281:310)),ps_16S)
+ps_16S <- prune_taxa(taxa_sums(ps_16S) > 0, ps_16S)
+
+# final ps_16S: 399 samples & 5500 OTUs
+
+ps_16S_most_abund <- prune_samples(!(sample_names(ps_16S_most_abund) %in% c(281:310)),ps_16S_most_abund)
+ps_16S_most_abund <- prune_taxa(taxa_sums(ps_16S_most_abund) > 0, ps_16S_most_abund)
+
+# final ps_16S_most_abund: 399 samples & 515 OTUs
+
+```
+
+```{r 18S}
+
+ps_18S <- prune_samples(!(sample_names(ps_18S) %in% c(281:310)),ps_18S)
+ps_18S <- prune_taxa(taxa_sums(ps_18S) > 0, ps_18S)
+
+# final ps_18S: 396 samples & 3170 OTUs
+
+ps_18S_most_abund <- prune_samples(!(sample_names(ps_18S_most_abund) %in% c(281:310)),ps_18S_most_abund)
+ps_18S_most_abund <- prune_taxa(taxa_sums(ps_18S_most_abund) > 0, ps_18S_most_abund)
+
+# final ps_18S_most_abund: 396 samples & 439 OTUs
+
+```
+
+# alpha diversity
+
+Alpha diversity indexes were calculated with an home made Qiime pipeline implemented in Python. Here, we load the resulting dataframe.
+
+```{r import data}
+
+library(readxl)
+ 
+alpha_div_16S <- read_excel("Data/alpha_div_16S.xlsx")
+alpha_div_18S <- read_excel("Data/alpha_div_18S.xlsx")
+# remove unused treatments (treatments not in this experimental design)
+alpha_div_16S = alpha_div_16S[!alpha_div_16S$sample %in% c(281:310),]
+alpha_div_18S = alpha_div_18S[!alpha_div_18S$sample %in% c(281:310),]
+
+```
+
+# Measurement of community functions 
+
+```{r import data}
+
+library(readxl)
+ 
+data_function <- read_excel("Data/Data_function.xlsx")
+# remove unused treatments (treatments not in this experimental design)
+data_function = data_function[!data_function$pool %in% c(141:155),]
+
+```

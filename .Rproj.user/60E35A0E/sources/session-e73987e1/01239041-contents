@@ -1,0 +1,234 @@
+---
+title: "8_mixOmics_DIABLO"
+author: "Sarah HUET"
+date: "2021 M03 10"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(phyloseq)
+library(mixOmics)
+library(tibble)
+library(dplyr)
+library(tidyr)
+```
+
+# Input Data
+
+```{r wrangle data}
+# choose the right phyloseq object
+tmp_ps0 = ps_16S_most_abund
+
+# OTU table
+## remove original soil and sterelized soil for this analysis
+tmp_ttt = c("T0") # sterelized soil has not been sequenced so is not in the phyloseq object
+tmp_ps = subset_samples(tmp_ps0,! tmp_ps0@sam_data$treatment %in% tmp_ttt)
+tmp_pool = unique(tmp_ps@sam_data$pool) # the number of the pool kept for this analysis
+tmp_nb_sample = table(tmp_ps@sam_data$pool) # calculate the number of sample merged in each pool
+## calculate relative abundance
+tmp_ps = transform_sample_counts(tmp_ps, function(x) x / sum(x))
+## merge sample by pool
+tmp_ps = merge_samples(tmp_ps,tmp_ps@sam_data$pool)
+## as previous function made a sum, we divided each relative abundance by the number of sample in the corresponding pool to obtain the mean
+tmp_otu_table = as.data.frame(tmp_ps@otu_table)
+tmp_otu_table = sweep(tmp_otu_table,1,tmp_nb_sample,FUN = '/')
+tmp_otu_table = tibble("pool"=tmp_ps@sam_data$pool,tmp_otu_table)
+
+# Function table
+tmp_function_table = data_function[data_function$pool %in% tmp_pool,c("pool","pH","NO3","NH4",
+                                                     "fructose","Gallic_acid","alanine")]
+
+# qPCR table
+tmp_qPCR_table = data_function[data_function$pool %in% tmp_pool,c("pool","16S","ITS","16S/ITS","AOB/16S",
+                                                     "nirK/16S","nirS/16S","nifH/16S")]
+
+```
+
+```{r remove missing values}
+
+# check if there not missing values
+table(is.na(tmp_otu_table))
+table(is.na(tmp_function_table)) # one missing value in tmp_function_table
+table(is.na(tmp_qPCR_table))
+
+# in which pool is the missing value ?
+tmp_missing_value = tmp_function_table$pool[!complete.cases(tmp_function_table)]
+
+# remove the pool with a missing value in the three tables
+tmp_pool= tmp_pool[ tmp_pool != tmp_missing_value]
+tmp_otu_table = tmp_otu_table[tmp_otu_table$pool %in% tmp_pool,]
+tmp_function_table = tmp_function_table[tmp_function_table$pool %in% tmp_pool,]
+tmp_qPCR_table = tmp_qPCR_table[tmp_qPCR_table$pool %in% tmp_pool,]
+
+```
+
+```{r create dataset}
+
+# arrange table to have the same pool order
+tmp_otu_table = arrange(tmp_otu_table, "pool")
+tmp_function_table = arrange(tmp_function_table, "pool")
+tmp_qPCR_table = arrange(tmp_qPCR_table, "pool")
+
+# merge the three tables into a single object
+tmp_data = list(otu = tmp_otu_table[,-1],
+                activity = tmp_function_table[,-1],
+                qPCRs = tmp_qPCR_table[,-1])
+
+# check dimension
+lapply(tmp_data, dim)
+
+# extract treatment names as factors
+tmp_ttt = data_function[,c("pool","treatment")]
+tmp_ttt = tmp_ttt[tmp_ttt$pool %in% tmp_pool,]
+tmp_ttt = tmp_ttt$treatment
+tmp_ttt <- factor(tmp_ttt)
+
+summary(tmp_ttt) # number of pool by treatment
+length(tmp_ttt) # total number of observations
+
+```
+
+# Parameter choice
+
+```{r Design}
+
+# create the design matrix 
+tmp_design = matrix(0.1, ncol = length(tmp_data), nrow = length(tmp_data), 
+                dimnames = list(names(tmp_data), names(tmp_data)))
+diag(tmp_design) = 0
+
+tmp_design
+
+```
+
+```{r Tuning the number of components}
+
+tmp_sgccda.res = block.splsda(X = tmp_data, Y = tmp_ttt, ncomp = 5, 
+                           design = tmp_design)
+
+set.seed(123) # for reproducibility, only when the `cpus' argument is not used
+# this code takes a couple of min to run
+tmp_perf.diablo = perf(tmp_sgccda.res, validation = 'Mfold', folds = 4, nrepeat = 10)
+
+#tmp_perf.diablo  # lists the different outputs
+plot(tmp_perf.diablo) 
+
+tmp_perf.diablo$choice.ncomp$WeightedVote
+
+# select the number of component
+tmp_ncomp = tmp_perf.diablo$choice.ncomp$WeightedVote["Overall.BER", "centroids.dist"]
+
+```
+
+```{r Tuning keepX (create test dataset)}
+
+tmp_test.keepX = list (OTU = c(1:5, seq(6, 44, 3), seq(45,515,20)),
+                       activity = c(1:6),
+                       qPCRs = c(1:7))
+
+summary(tmp_test.keepX)
+```
+
+```{r Tuning keepX (~1h30)}
+
+#set.seed(123) # for reproducibility, only when the `cpus' argument is not used
+
+tmp_tune.TCGA = tune.block.splsda(X = tmp_data, Y = tmp_ttt, ncomp = tmp_ncomp, 
+                              test.keepX = tmp_test.keepX, design = tmp_design,
+                              validation = 'Mfold', folds = 10, nrepeat = 1,
+                              #cpus = 2, 
+                              dist = "centroids.dist")
+
+
+tmp_list.keepX = tmp_tune.TCGA$choice.keepX
+tmp_list.keepX
+
+# to manually input parameters from this tuning step
+#tmp_list.keepX = list(otu = c(42,165,505,485,485), activity = c(2,4,3,2,6), qPCRs = c(4,2,2,4,1))
+
+```
+
+## Final model
+
+```{r select a tune model}
+
+tmp_list.keepX = tmp_tune.TCGA$choice.keepX
+tmp_list.keepX
+
+tmp_ncomp = as.numeric(length(tmp_list.keepX[[1]]) ) 
+tmp_ncomp
+
+tmp_sgccda.res = block.splsda(X = tmp_data, Y = tmp_ttt, ncomp = tmp_ncomp,
+                              keepX = tmp_list.keepX, design = tmp_design)
+#tmp_sgccda.res   # list the different functions of interest related to that object
+
+tmp_sgccda.res$design
+
+# OTU variables selected on component 1
+length(selectVar(tmp_sgccda.res, block = 'otu', comp = 1)$otu$name)
+
+
+
+```
+
+## Network
+
+```{r panel 5}
+
+tmp_diabloPanel <- mapply(function(x, y, z,e,f){
+  c(x, y, z,e,f)
+}, x = lapply(selectVar(tmp_sgccda.res, comp = 1), function(i) unlist(i[[1]])),
+y = lapply(selectVar(tmp_sgccda.res, comp = 2), function(i) unlist(i[[1]])),
+z = lapply(selectVar(tmp_sgccda.res, comp = 3), function(i) unlist(i[[1]])),
+e = lapply(selectVar(tmp_sgccda.res, comp = 4), function(i) unlist(i[[1]])),
+f = lapply(selectVar(tmp_sgccda.res, comp = 5), function(i) unlist(i[[1]])))
+
+sapply(tmp_diabloPanel, length)
+## only keep unique features
+tmp_diabloPanel <- lapply(tmp_diabloPanel, unique)
+sapply(tmp_diabloPanel, length)
+
+
+tmp_diabloPanel2 <- list(otu=tmp_diabloPanel[[1]],
+                         activity=tmp_diabloPanel[[2]],
+                         qPCRs=tmp_diabloPanel[[3]])
+sapply(tmp_diabloPanel2, length)
+
+rm(tmp_diabloPanel)
+
+```
+
+```{r extract network}
+
+# correlation matrix
+tmp_corMat <- mapply(function(x, y){
+  y[, x]
+}, x = tmp_diabloPanel2, y = tmp_data, SIMPLIFY = FALSE) %>%
+  do.call(cbind, .) %>%
+  cor
+
+# rename properly the column
+colnames(tmp_corMat) <- rownames(tmp_corMat) <- gsub('(otu|activity|qPCRs)[:.:]',"",colnames(tmp_corMat))
+
+# remove duplicates
+tmp_corMat[lower.tri(tmp_corMat)] <- 0
+diag(tmp_corMat) <- 0
+
+# extract and filter correlations
+tmp_links <- tmp_corMat %>%
+  as.data.frame() %>%
+  mutate(to = rownames(.)) %>%
+  gather(from, cor, -to) %>%
+  filter(abs(cor) > 0.6) # keep only correlations <-0.6 or >0.6
+
+# extract node names
+tmp_nodes = data.frame(id = unique(c(tmp_links$to, tmp_links$from)))
+
+# wirte a csv file to import the network into cytoscape software
+write.csv(tmp_links,"cytoscape_diablo_network.csv",row.names = F,quote = F)
+
+```
+

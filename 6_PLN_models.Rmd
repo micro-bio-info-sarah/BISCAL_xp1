@@ -1,0 +1,252 @@
+---
+title: "6_PLN_models"
+author: "Sarah HUET"
+date: "2021 M03 10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# remove all temporary objects from your environment
+rm(list = names(.GlobalEnv)[grep("tmp",names(.GlobalEnv))])
+
+```
+
+```{r choose your data}
+
+# select which data you want to test
+
+tmp_barcode = "16S" # "16S" or "18S"
+tmp_step = "Step 1" # "Step 1" or "Step 2"
+
+```
+
+# Model
+
+```{r wrangle data}
+
+# select data from the chosen barcode
+if (tmp_barcode == "16S") {
+  tmp_ps0 = ps_16S_most_abund
+} else {
+  tmp_ps0 = ps_18S_most_abund
+}
+
+# select data from the chosen step
+if (tmp_step == "Step 1") {
+  tmp_ps = subset_samples(tmp_ps0,tmp_ps0@sam_data$phase == "Step 1") # select Step 1 treatments
+} else {
+  tmp_ps = subset_samples(tmp_ps0,tmp_ps0@sam_data$phase == "Step 2") # select Step 2 treatments
+}
+
+```
+
+```{r model}
+
+# calculate offset
+tmp_otu_table = t(as.matrix(data.frame(tmp_ps@otu_table)))
+tmp_Offset <- compute_offset(tmp_otu_table, offset = "TSS")
+
+# covariable dataframe
+tmp_covariables = data.frame(tmp_ps@sam_data)
+tmp_covariables = tmp_covariables[,c("sample","phase","treatment")]
+# prepare dataframe
+tmp_df <- prepare_data(counts = tmp_otu_table,tmp_covariables)
+tmp_df$Offset <- tmp_Offset
+# calcule network
+tmp_network <- PLNnetwork(Abundance ~ 1 + offset(log(Offset)), data = tmp_df)
+
+# obtain best model
+tmp_model.StARS <- tmp_network$getBestModel("StARS")
+# save model
+save(tmp_model.StARS, file=paste0("PLN_model_StARS",tmp_barcode,tmp_step,".RData"))
+
+```
+
+# Network
+
+```{r extract network}
+
+# graph adjacency matrix (value = partial correlation value)
+tmp_adjacency.StARS <- as.matrix(tmp_model.StARS$latent_network())
+# remove redundant data from the matrix
+diag(tmp_adjacency.StARS)=0
+tmp_adj=tmp_adjacency.StARS
+tmp_adj[lower.tri(tmp_adj,diag=T)]=0
+# define a partial correlation threshold
+tmp_thrld = 0.08
+# extract edges above a threshold and involved nodes
+tmp_edges <- which(abs(tmp_adj)>tmp_thrld,arr.ind=TRUE)
+tmp_edges_val = tmp_adj[tmp_edges]
+tmp_edges_otu <- cbind("source"=rownames(tmp_adj)[tmp_edges[,1]],"target"=rownames(tmp_adj)[tmp_edges[,2]])
+tmp_edges_otu.final=cbind(tmp_edges_otu,"value"=tmp_edges_val)
+# extract involved nodes
+tmp_nodes <- unique(c(rownames(tmp_adj)[tmp_edges[,1]],rownames(tmp_adj)[tmp_edges[,2]]))
+# extract network for cytoscape
+tmp_edges_otu.final <- gsub(" ","",tmp_edges_otu.final)
+write.csv(tmp_edges_otu.final,file = paste0("cytoscape_PLN_tmp_net.csv"),
+          quote = F,row.names = F)
+
+```
+
+```{r edge shape for network}
+
+##### NEGATIVE INTERACTIONS -----
+
+# select edges with negative value
+tmp_negcor_df = as_tibble(tmp_edges_otu.final[tmp_edges_otu.final[,3] < 0,])
+tmp_negcor_df$value <- as.numeric(tmp_negcor_df$value)
+tmp_negcor_df[,"name"] <- paste0("edge_neg_",rank(tmp_negcor_df$value))
+# combine edges with node taxo
+for (i in 1:nrow(tmp_negcor_df)) {
+  tmp_negcor_df[i,"Source_Class"] <- tmp_ps@tax_table[tmp_negcor_df$source[i],"Class"]
+  tmp_negcor_df[i,"Target_Class"] <- tmp_ps@tax_table[tmp_negcor_df$target[i],"Class"]
+}
+# define shape column 
+tmp_negcor_df[,"edge_shape"] <- "vertical_slash"
+
+# loop to check in treatments if shape change
+for (i in 1:nrow(tmp_negcor_df)) {
+  
+  tmp_heatmap = glmPLN.effects.xp1
+  tmp_df_C.T = tibble("ttt"=  colnames(tmp_heatmap)[-1],
+                      "source_C.T"= t(tmp_heatmap[tmp_heatmap$OTU == tmp_negcor_df$source[i],-1]),
+                      "target_C.T"= t(tmp_heatmap[tmp_heatmap$OTU == tmp_negcor_df$target[i],-1]))
+  
+  
+  tmp_heatmap = glmPLN.effects.xp2.CC.TT
+  tmp_df_CC.TT = tibble("ttt"=  unlist(strsplit(colnames(tmp_heatmap)[-1],"_"))[seq(2,by = 2,length.out = 10)],
+                        "source_CC.TT"= t(tmp_heatmap[tmp_heatmap$OTU == tmp_negcor_df$source[i],-1]),
+                        "target_CC.TT"= t(tmp_heatmap[tmp_heatmap$OTU == tmp_negcor_df$target[i],-1]))
+  
+  tmp_heatmap = glmPLN.effects.xp2.CC.CT
+  tmp_df_CC.CT = tibble("ttt"=  unlist(strsplit(colnames(tmp_heatmap)[-1],"_"))[seq(2,by = 2,length.out = 10)],
+                        "source_CC.CT"= t(tmp_heatmap[tmp_heatmap$OTU == tmp_negcor_df$source[i],-1]),
+                        "target_CC.CT"= t(tmp_heatmap[tmp_heatmap$OTU == tmp_negcor_df$target[i],-1]))
+  
+  tmp_heatmap = glmPLN.effects.xp2.TT.CT
+  tmp_df_TT.CT = tibble("ttt"=  unlist(strsplit(colnames(tmp_heatmap)[-1],"_"))[seq(2,by = 2,length.out = 10)],
+                        "source_TT.CT"= t(tmp_heatmap[tmp_heatmap$OTU == tmp_negcor_df$source[i],-1]),
+                        "target_TT.CT"= t(tmp_heatmap[tmp_heatmap$OTU == tmp_negcor_df$target[i],-1]))
+  
+  tmp_df = left_join(tmp_df_C.T,tmp_df_CC.TT,by = "ttt")
+  tmp_df = left_join(tmp_df,tmp_df_CC.CT,by = "ttt")
+  tmp_df = left_join(tmp_df,tmp_df_TT.CT,by = "ttt")
+  tmp_df[is.na(tmp_df)] <- 0
+  
+  # check if source & target have opposite behavior in C.T
+  tmp_df[,"negcor_C.T"] <- 0
+  tmp_df[tmp_df$source_C.T >0 & tmp_df$target_C.T <0,"negcor_C.T"] <- 1
+  tmp_df[tmp_df$source_C.T <0 & tmp_df$target_C.T >0,"negcor_C.T"] <- 1
+  # check if source & target have opposite behavior in CC.TT
+  tmp_df[,"negcor_CC.TT"] <- 0
+  tmp_df[tmp_df$source_CC.TT >0 & tmp_df$target_CC.TT <0,"negcor_CC.TT"] <- 1
+  tmp_df[tmp_df$source_CC.TT <0 & tmp_df$target_CC.TT >0,"negcor_CC.TT"] <- 1
+  # check if source & target have opposite behavior in C.T & CC.TT
+  tmp_df[,"negcor_C.T_CC.TT"] <- 0
+  tmp_df[tmp_df$source_C.T >0 & tmp_df$source_CC.TT >0 & tmp_df$target_C.T <0 & tmp_df$target_CC.TT <0,"negcor_C.T_CC.TT"] <- 1
+  tmp_df[tmp_df$source_C.T <0 & tmp_df$source_CC.TT <0 & tmp_df$target_C.T >0 & tmp_df$target_CC.TT >0,"negcor_C.T_CC.TT"] <- 1
+  # check if source & target are CC.CTid
+  tmp_df[,"negcor_CC.CTid"] <- 0
+  tmp_df[tmp_df$source_CC.CT ==0 & tmp_df$target_CC.CT ==0,"negcor_CC.CTid"] <- 1
+  
+  # define link shape in negcor_df
+  ## dot
+  if (nrow(tmp_df[tmp_df$negcor_C.T >0,]) >0) {
+    tmp_negcor_df[i,"edge_shape"] <- "dot"
+  }
+  ## dash
+  if (nrow(tmp_df[tmp_df$negcor_CC.TT >0 & tmp_df$negcor_CC.CTid >0,]) >0) {
+    tmp_negcor_df[i,"edge_shape"] <- "dash"
+  }
+  ## solid
+  if (nrow(tmp_df[tmp_df$negcor_C.T_CC.TT >0 & tmp_df$negcor_CC.CTid >0,]) >0) {
+    tmp_negcor_df[i,"edge_shape"] <- "solid"
+  }
+} 
+
+##### POSITIVE INTERACTIONS -----
+
+# select edges with positive value
+tmp_poscor_df = as_tibble(tmp_edges_otu.final[tmp_edges_otu.final[,3] > 0,])
+tmp_poscor_df$value <- as.numeric(tmp_poscor_df$value)
+tmp_poscor_df[,"name"] <- paste0("edge_",1:nrow(tmp_poscor_df))
+# combine edges with node taxo
+for (i in 1:nrow(tmp_poscor_df)) {
+  tmp_poscor_df[i,"Source_Class"] <- tmp_ps@tax_table[tmp_poscor_df$source[i],"Class"]
+  tmp_poscor_df[i,"Target_Class"] <- tmp_ps@tax_table[tmp_poscor_df$target[i],"Class"]
+}
+# define shape column 
+tmp_poscor_df[,"edge_shape"] <- "vertical_slash"
+
+# loop to check in treatments if shape change
+for (i in 1:nrow(tmp_poscor_df)) {
+  
+  tmp_heatmap = glmPLN.effects.xp1
+  tmp_df_C.T = tibble("ttt"=  colnames(tmp_heatmap)[-1],
+                      "source_C.T"= t(tmp_heatmap[tmp_heatmap$OTU == tmp_poscor_df$source[i],-1]),
+                      "target_C.T"= t(tmp_heatmap[tmp_heatmap$OTU == tmp_poscor_df$target[i],-1]))
+  
+  
+  tmp_heatmap = glmPLN.effects.xp2.CC.TT
+  tmp_df_CC.TT = tibble("ttt"=  unlist(strsplit(colnames(tmp_heatmap)[-1],"_"))[seq(2,by = 2,length.out = 10)],
+                        "source_CC.TT"= t(tmp_heatmap[tmp_heatmap$OTU == tmp_poscor_df$source[i],-1]),
+                        "target_CC.TT"= t(tmp_heatmap[tmp_heatmap$OTU == tmp_poscor_df$target[i],-1]))
+  
+  tmp_heatmap = glmPLN.effects.xp2.CC.CT
+  tmp_df_CC.CT = tibble("ttt"=  unlist(strsplit(colnames(tmp_heatmap)[-1],"_"))[seq(2,by = 2,length.out = 10)],
+                        "source_CC.CT"= t(tmp_heatmap[tmp_heatmap$OTU == tmp_poscor_df$source[i],-1]),
+                        "target_CC.CT"= t(tmp_heatmap[tmp_heatmap$OTU == tmp_poscor_df$target[i],-1]))
+  
+  tmp_heatmap = glmPLN.effects.xp2.TT.CT
+  tmp_df_TT.CT = tibble("ttt"=  unlist(strsplit(colnames(tmp_heatmap)[-1],"_"))[seq(2,by = 2,length.out = 10)],
+                        "source_TT.CT"= t(tmp_heatmap[tmp_heatmap$OTU == tmp_poscor_df$source[i],-1]),
+                        "target_TT.CT"= t(tmp_heatmap[tmp_heatmap$OTU == tmp_poscor_df$target[i],-1]))
+  
+  tmp_df = left_join(tmp_df_C.T,tmp_df_CC.TT,by = "ttt")
+  tmp_df = left_join(tmp_df,tmp_df_CC.CT,by = "ttt")
+  tmp_df = left_join(tmp_df,tmp_df_TT.CT,by = "ttt")
+  tmp_df[is.na(tmp_df)] <- 0
+  
+  # check if source & target have same behavior in C.T
+  tmp_df[,"poscor_C.T"] <- 0
+  tmp_df[tmp_df$source_C.T >0 & tmp_df$target_C.T >0,"poscor_C.T"] <- 1
+  tmp_df[tmp_df$source_C.T <0 & tmp_df$target_C.T <0,"poscor_C.T"] <- 1
+  # check if source & target have same behavior in CC.TT
+  tmp_df[,"poscor_CC.TT"] <- 0
+  tmp_df[tmp_df$source_CC.TT >0 & tmp_df$target_CC.TT >0,"poscor_CC.TT"] <- 1
+  tmp_df[tmp_df$source_CC.TT <0 & tmp_df$target_CC.TT <0,"poscor_CC.TT"] <- 1
+  # check if source & target have same behavior in C.T & CC.TT
+  tmp_df[,"poscor_C.T_CC.TT"] <- 0
+  tmp_df[tmp_df$source_C.T >0 & tmp_df$source_CC.TT >0 & tmp_df$target_C.T >0 & tmp_df$target_CC.TT >0,"poscor_C.T_CC.TT"] <- 1
+  tmp_df[tmp_df$source_C.T <0 & tmp_df$source_CC.TT <0 & tmp_df$target_C.T <0 & tmp_df$target_CC.TT <0,"poscor_C.T_CC.TT"] <- 1
+  # check if source & target are CC.CTid
+  tmp_df[,"poscor_CC.CTid"] <- 0
+  tmp_df[tmp_df$source_CC.CT ==0 & tmp_df$target_CC.CT ==0,"poscor_CC.CTid"] <- 1
+
+  # define link shape in poscor_df
+  ## dot
+  if (nrow(tmp_df[tmp_df$poscor_C.T >0,]) >0) {
+    tmp_poscor_df[i,"edge_shape"] <- "dot"
+  }
+  ## dash
+  if (nrow(tmp_df[tmp_df$poscor_CC.TT >0 & tmp_df$poscor_CC.CTid >0,]) >0) {
+    tmp_poscor_df[i,"edge_shape"] <- "dash"
+  }
+  ## solid
+  if (nrow(tmp_df[tmp_df$poscor_C.T_CC.TT >0 & tmp_df$poscor_CC.CTid >0,]) >0) {
+    tmp_poscor_df[i,"edge_shape"] <- "solid"
+  }
+  
+} 
+
+##### COMBINE NEG AND POS COR -----
+tmp_net_edge_shape = rbind(tmp_negcor_df[,c("source","target","value","name",
+                                            "Source_Class","Target_Class","edge_shape")],
+                           tmp_poscor_df[,c("source","target","value","name",
+                                            "Source_Class","Target_Class","edge_shape")])
+
+write.csv(tmp_net_edge_shape,paste0("Projet/PLN_net_edge_shape_",tmp_barcode,tmp_step,".csv"),row.names = F,quote = F)
+
+```

@@ -1,0 +1,92 @@
+---
+title: "7_soil_properties_and_functions"
+author: "Sarah HUET"
+date: "2021 M03 10"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# remove all temporary objects from your environment
+rm(list = names(.GlobalEnv)[grep("tmp",names(.GlobalEnv))])
+
+```
+
+```{r choose your data}
+
+# select which data you want to test
+
+tmp_step = "Step 1" # "Step 1" or "Step 2"
+
+# choose a variable from Data-function between:
+## soil properties: "humidity" or "pH"
+## N-cycling activities: "NO3", "NH4", "Ntot"
+## C-cycling activites: "fructose", "Gallic_acid", "alanine"
+## abundance of microbial groups: "16S", "nirK", "nirS", "AOB", "nifH", "ITS"
+tmp_function = "pH" 
+
+```
+
+```{r wrangle data}
+
+if (tmp_step == "Step 1") {
+  tmp_data <- data_function[data_function$phase %in% c("Step 1","Step 0"),] # select Step 1 treatments, Original soil and Sterile soil
+  tmp_data <- tmp_data[,c("treatment","pool",tmp_function)] # select the chosen function
+  ### keep sterile soil for pH, NO3 and NH4 and Original soil for other functions
+  if (tmp_function %in% c("pH","NO3","NH4","Ntot")) {
+    tmp_data = tmp_data[tmp_data$treatment != "Original soil",]
+  } else {
+    tmp_data = tmp_data[tmp_data$treatment != "Sterile soil",]
+  }
+  tmp_data <- tmp_data[complete.cases(tmp_data),] # remove NAs
+  
+} else {
+  tmp_data <- data_function[data_function$phase == "Step 2",] # select Step 1 treatments, Original soil and Sterile soil
+  tmp_data <- tmp_data[,c("treatment","pool",tmp_function)] # select the chosen function
+  tmp_data <- tmp_data[complete.cases(tmp_data),] # remove NAs
+}
+
+colnames(tmp_data)[3] <- "value"
+
+```
+
+```{r statistic test}
+
+library(agricolae)
+library(tibble)
+
+# linear model
+tmp_lm = lm(tmp_data$value ~ tmp_data$treatment, na.action = na.omit )
+summary(tmp_lm)
+# anova
+anova(tmp_lm)
+tmp_aov = aov(tmp_lm)
+summary(tmp_aov)
+# post hoc Tukey test
+tmp_comp <- HSD.test(tmp_aov,'tmp_data$treatment',alpha = 0.05,group = T)
+# tibble with statistical groups
+tmp_stat = tibble("treatment"=rownames(tmp_comp[["groups"]]),
+                  "mean"=tmp_comp[["groups"]][["tmp_data$value"]],
+                  "stat_groups"=as.character(tmp_comp[["groups"]][["groups"]]))
+# put a * for treatments in a different group than the control
+tmp_stat[,"stat_dif_control"] <- " "
+
+if (tmp_step == "Step 1") {
+  tmp_group_control <- unlist(strsplit(tmp_stat$stat_groups[tmp_stat$treatment == "C"],""))
+} else {
+  tmp_group_control <- unlist(strsplit(tmp_stat$stat_groups[tmp_stat$treatment == "C_C"],""))
+}
+
+for (i in tmp_stat$treatment) {
+  tmp_group_treatment = unlist(strsplit(tmp_stat$stat_groups[tmp_stat$treatment == i],""))
+  ifelse(length(intersect(tmp_group_control,tmp_group_treatment)) == 0,
+         tmp_stat[tmp_stat$treatment == i,"stat_dif_control"] <- "*",
+         tmp_stat[tmp_stat$treatment == i,"stat_dif_control"] <- " ")
+  
+}
+rm(i)
+
+```

@@ -1,0 +1,28 @@
+{
+    "id": "01239041",
+    "path": "~/OneDrive/Thesis/huet_2021-master/8_mixOmics_DIABLO.Rmd",
+    "project_path": "8_mixOmics_DIABLO.Rmd",
+    "type": "r_markdown",
+    "hash": "0",
+    "contents": "",
+    "dirty": true,
+    "created": 1702133614191.0,
+    "source_on_save": false,
+    "relative_order": 2,
+    "properties": {
+        "source_window_id": "",
+        "Source": "Source",
+        "last_setup_crc32": "e73987e17524fcc0",
+        "cursorPosition": "152,0",
+        "scrollLine": "106",
+        "chunk_output_type": "console"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1702136054,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1702143060849,
+    "read_only": false,
+    "read_only_alternatives": []
+}

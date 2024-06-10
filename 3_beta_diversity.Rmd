@@ -1,0 +1,125 @@
+---
+title: "3_beta_diversity"
+author: "Sarah HUET"
+date: "2021 M03 10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(phyloseq)
+library(ggplot2)
+
+# remove all temporary objects from your environment
+rm(list = names(.GlobalEnv)[grep("tmp",names(.GlobalEnv))])
+
+```
+
+```{r choose your data}
+
+# select which data you want to test
+
+tmp_barcode = "16S" # "16S" or "18S"
+tmp_step = "Step 1" # "Step 1" or "Step 2"
+
+```
+
+# Calculate distance matrix and ordination
+
+```{r wrangle data}
+
+# select data from the chosen barcode
+if (tmp_barcode == "16S") {
+  tmp_ps0 = ps_16S
+  tmp_sample_size = 9000 
+} else {
+  tmp_ps0 = ps_18S
+  tmp_sample_size = 8000
+}
+
+# select data from the chosen step
+if (tmp_step == "Step 1") {
+  tmp_ps = subset_samples(tmp_ps0,tmp_ps0@sam_data$phase %in% c("Step 1","Step 0")) # select both Step 1 treatments and Original soil
+  tmp_ps = rarefy_even_depth(tmp_ps,sample.size = tmp_sample_size) # rarefy dataset
+  tmp_control = "C"
+} else {
+  tmp_ps = subset_samples(tmp_ps0,tmp_ps0@sam_data$phase == "Step 2") # select Step 2 treatments
+  tmp_ps = rarefy_even_depth(tmp_ps,sample.size = tmp_sample_size) # rarefy dataset
+  tmp_control = "C_C"
+}
+
+
+
+
+```
+
+```{r calculate distance matrix and ordination}
+
+# calculate weighted Unifrac distances
+tmp_dist = distance(tmp_ps,"wunifrac")
+# calculate ordination
+tmp_ordin = ordinate(tmp_ps, "PCoA", distance = tmp_dist)
+
+
+```
+
+# Data for distance barplot 
+
+```{r select distances from the control}
+
+library(reshape2)
+
+# wrangle distance matrix into a longer dataframe
+tmp_dist_matrix = melt(as.matrix(tmp_dist))
+# remove self-comparisons
+tmp_dist_matrix = tmp_dist_matrix[tmp_dist_matrix$Var1 != tmp_dist_matrix$Var2,]
+# select sample data
+tmp_sam_data = tibble("sample"=tmp_ps@sam_data$sample,
+                      "treatment"=tmp_ps@sam_data$treatment)
+# combined distance matrix with sample data
+colnames(tmp_sam_data) = c("Var1", "treatment1")
+tmp_data <- left_join(tmp_dist_matrix, tmp_sam_data, by = "Var1")
+colnames(tmp_sam_data) = c("Var2", "treatment2")
+tmp_data <- left_join(tmp_data, tmp_sam_data, by = "Var2")
+# select distances from the control
+tmp_data <- tmp_data[tmp_data$treatment1 == tmp_control,]
+
+```
+
+```{r statistic test}
+
+library(agricolae)
+
+# linear model
+tmp_lm = lm(tmp_data$value ~ tmp_data$treatment2, na.action = na.omit )
+summary(tmp_lm)
+# anova
+anova(tmp_lm)
+tmp_aov = aov(tmp_lm)
+summary(tmp_aov)
+# post hoc Tukey test
+tmp_comp <- HSD.test(tmp_aov,'tmp_data$treatment',alpha = 0.05,group = T)
+# tibble with statistical groups
+tmp_stat = tibble("treatment"=rownames(tmp_comp[["groups"]]),
+                  "mean"=tmp_comp[["groups"]][["tmp_data$value"]],
+                  "stat_groups"=tmp_comp[["groups"]][["groups"]])
+# put a * for treatments in a different group than the control
+tmp_stat[,"stat_dif_control"] <- NA
+
+if (tmp_step == "Step 1") {
+  tmp_group_control <- unlist(strsplit(tmp_stat$stat_groups[tmp_stat$treatment == "C"],""))
+} else {
+  tmp_group_control <- unlist(strsplit(tmp_stat$stat_groups[tmp_stat$treatment == "C_C"],""))
+}
+
+for (i in tmp_stat$treatment) {
+  tmp_group_treatment = unlist(strsplit(tmp_stat$stat_groups[tmp_stat$treatment == i],""))
+  ifelse(length(intersect(tmp_group_control,tmp_group_treatment)) == 0,
+         tmp_stat[tmp_stat$treatment == i,"stat_dif_control"] <- "*",
+         tmp_stat[tmp_stat$treatment == i,"stat_dif_control"] <- " ")
+  
+}
+rm(i)
+
+```

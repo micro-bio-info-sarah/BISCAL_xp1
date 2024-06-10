@@ -1,0 +1,5 @@
+"0","knitr::opts_chunk$set(echo = TRUE)"
+"0",""
+"0","# remove all temporary objects from your environment"
+"0","rm(list = names(.GlobalEnv)[grep(""tmp"",names(.GlobalEnv))])"
+"0",""

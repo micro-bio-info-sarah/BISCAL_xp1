@@ -1,0 +1,97 @@
+---
+title: "2_alpha_div"
+author: "Sarah HUET"
+date: "2021 M03 10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# remove all temporary objects from your environment
+rm(list = names(.GlobalEnv)[grep("tmp",names(.GlobalEnv))])
+
+```
+
+```{r choose your data}
+
+# select which data you want to test
+
+tmp_barcode = "16S" # "16S" or "18S"
+tmp_step = "Step 2" # "Step 1" or "Step 2"
+tmp_index = "observed_species" # "chao1", "dominance", "equitability", "observed_species", "PD_whole_tree", "shannon", "simpson_reciprocal"
+
+```
+
+```{r wrangle data}
+
+library(dplyr)
+
+# select barcode
+if (tmp_barcode == "16S") {
+  tmp_alphadiv = alpha_div_16S
+  tmp_ps = ps_16S
+} else {
+  tmp_alphadiv = alpha_div_18S
+  tmp_ps = ps_18S
+  }
+# select treatments
+if (tmp_step == "Step 1") {
+  tmp_ps <- prune_samples(tmp_ps@sam_data$phase %in% c("Step 1","Step 0"), tmp_ps)
+  tmp_data <- tmp_alphadiv[tmp_alphadiv$sample %in% sample_names(tmp_ps),] # select Step 1 treatments and Original soil
+  tmp_control = "C"
+} else {
+  tmp_ps <- prune_samples(tmp_ps@sam_data$phase == "Step 2", tmp_ps)
+  tmp_data <- tmp_alphadiv[tmp_alphadiv$sample %in% sample_names(tmp_ps),] # select Step 2 treatments
+  tmp_control = "C_C"
+}
+# wrangle data
+tmp_data <- tmp_data[,c("sample",tmp_index)] # select the chosen index
+tmp_data <- tmp_data[complete.cases(tmp_data),] # remove NAs
+colnames(tmp_data)[2] <- "value"
+# concatenate iterations for each sample by mean
+tmp_data <- tmp_data %>% group_by(sample) %>% summarise(value = mean(value))
+# add treatment
+tmp_data <- left_join(tmp_data,tmp_ps@sam_data[,c("sample","treatment")],by="sample")
+
+
+```
+
+```{r statistic test}
+
+library(agricolae)
+library(tibble)
+
+# linear model
+tmp_lm = lm(tmp_data$value ~ tmp_data$treatment, na.action = na.omit )
+summary(tmp_lm)
+# anova
+anova(tmp_lm)
+tmp_aov = aov(tmp_lm)
+summary(tmp_aov)
+# post hoc Tukey test
+tmp_comp <- HSD.test(tmp_aov,'tmp_data$treatment',alpha = 0.05,group = T)
+# tibble with statistical groups
+tmp_stat = tibble("treatment"=rownames(tmp_comp[["groups"]]),
+                  "mean"=tmp_comp[["groups"]][["tmp_data$value"]],
+                  "stat_groups"=as.character(tmp_comp[["groups"]][["groups"]]))
+# put a * for treatments in a different group than the control
+tmp_stat[,"stat_dif_control"] <- " "
+
+if (tmp_step == "Step 1") {
+  tmp_group_control <- unlist(strsplit(tmp_stat$stat_groups[tmp_stat$treatment == "C"],""))
+} else {
+  tmp_group_control <- unlist(strsplit(tmp_stat$stat_groups[tmp_stat$treatment == "C_C"],""))
+}
+
+for (i in tmp_stat$treatment) {
+  tmp_group_treatment = unlist(strsplit(tmp_stat$stat_groups[tmp_stat$treatment == i],""))
+  ifelse(length(intersect(tmp_group_control,tmp_group_treatment)) == 0,
+         tmp_stat[tmp_stat$treatment == i,"stat_dif_control"] <- "*",
+         tmp_stat[tmp_stat$treatment == i,"stat_dif_control"] <- " ")
+  
+}
+rm(i)
+
+```
+

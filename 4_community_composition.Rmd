@@ -1,0 +1,78 @@
+---
+title: "4_community_composition"
+author: "Sarah HUET"
+date: "2021 M03 10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# remove all temporary objects from your environment
+rm(list = names(.GlobalEnv)[grep("tmp",names(.GlobalEnv))])
+
+```
+
+```{r choose your data}
+
+# select which data you want to test
+
+tmp_barcode = "16S" # "16S" or "18S"
+tmp_step = "Step 1" # "Step 1" or "Step 2"
+
+```
+
+# Data for Community composition charts
+
+It will show the 14 most abundant Class.
+To transform the data, I choose to calculate the relative abundance after samples by treatment to obtain a relative abundance total of 1 for each treatment.
+
+```{r wrangle data}
+
+# select data from the chosen barcode
+if (tmp_barcode == "16S") {
+  tmp_ps0 = ps_16S
+} else {
+  tmp_ps0 = ps_18S
+}
+
+# select data from the chosen step
+if (tmp_step == "Step 1") {
+  tmp_ps = subset_samples(tmp_ps0,tmp_ps0@sam_data$phase %in% c("Step 1","Step 0")) # select both Step 1 treatments and Original soil
+} else {
+  tmp_ps = subset_samples(tmp_ps0,tmp_ps0@sam_data$phase == "Step 2") # select Step 2 treatments
+}
+
+```
+
+```{r Determine 14 most abundant Class}
+
+tmp_class = tibble("Class"=tmp_ps0@tax_table[,"Class"],
+                   "Abundance" = taxa_sums(tmp_ps0))
+# select most abundant Class
+tmp_class = tmp_class %>% group_by(Class) %>% summarise(sum=sum(Abundance))
+tmp_class = as.character(tmp_class$Class[order(tmp_class$sum, decreasing = TRUE)[1:14]])
+tmp_class
+
+```
+
+```{r select data}
+
+# wrangle ps object
+## aggregate by treatment
+tmp_ps <- merge_samples(tmp_ps,"treatment")
+## aggregate by taxa_rank
+tmp_ps <- tax_glom(tmp_ps,taxrank = "Class")
+## transform to relative abundance 
+tmp_ps <- transform_sample_counts(tmp_ps,function(x) x / sum(x))
+
+# extract relative abundance and taxonomy
+tmp_data <- psmelt(tmp_ps)
+tmp_data <- tmp_data[,c("Sample","Abundance","Class")]
+colnames(tmp_data) <- c("treatment","Abundance","Class")
+
+```
+
+
+
+
